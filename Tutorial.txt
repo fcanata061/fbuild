@@ -1,0 +1,199 @@
+===============================
+ TUTORIAL COMPLETO DO lfs.sh
+===============================
+
+1. INTRODUÇÃO
+-------------
+O script `lfs.sh` é um gerenciador de builds inspirado no Linux From Scratch.
+Ele permite:
+ - Baixar, extrair, aplicar patches, compilar e instalar pacotes.
+ - Manter cada pacote descrito em um arquivo `.lfpkg`.
+ - Suportar toolchain temporário (binutils + gcc + glibc).
+ - Criar pacotes binários para reinstalação ou distribuição.
+ - Controlar dependências e remoção.
+
+O objetivo é organizar a construção de um sistema baseado em LFS,
+automatizando tarefas repetitivas.
+
+---
+
+2. INSTALAÇÃO E CONFIGURAÇÃO
+----------------------------
+a) Baixe o `lfs.sh` e dê permissão de execução:
+    chmod +x lfs.sh
+
+b) Configure os diretórios no topo do script:
+    PREFIX="/usr"
+    DESTDIR="/mnt/lfs"
+    SRCDIR="/sources"
+    BUILDDIR="/build"
+    PKGDIR="/packages"
+    FILEDB="/var/lib/lfpkg"
+
+c) Crie os diretórios iniciais:
+    mkdir -pv /mnt/lfs/{sources,build,packages}
+    mkdir -pv /var/lib/lfpkg
+
+d) Opcional: exporte variáveis de ambiente para uso do toolchain:
+    export LFS=/mnt/lfs
+    export PATH=$LFS/tools/bin:$PATH
+
+---
+
+3. ÁRVORE DE DIRETÓRIOS
+-----------------------
+Estrutura típica criada pelo `lfs.sh`:
+
+/
+ ├── mnt/lfs/            -> raiz do sistema em construção
+ │    ├── tools/         -> toolchain temporário
+ │    ├── sources/       -> tarballs baixados
+ │    ├── build/         -> diretórios de compilação
+ │    └── packages/      -> pacotes binários gerados (.tar.xz)
+ ├── var/lib/lfpkg/      -> banco de dados de arquivos instalados
+ └── etc/lfpkg.conf      -> configuração global (opcional)
+
+---
+
+4. COMANDOS SUPORTADOS
+-----------------------
+O `lfs.sh` suporta os seguintes subcomandos:
+
+  download <pacote.lfpkg>       -> apenas baixar os fontes e patches
+  extract <pacote.lfpkg>        -> extrair fontes no diretório build
+  patch <pacote.lfpkg>          -> aplicar patches listados
+  build <pacote.lfpkg>          -> compilar sem instalar
+  install <pacote.lfpkg>        -> compilar e instalar em DESTDIR
+  install-stage <pacote.lfpkg>  -> instalar em staging (DESTDIR)
+  package <pacote.lfpkg>        -> gerar pacote binário (.tar.xz)
+  build-package <pacote.lfpkg>  -> faz todo o fluxo (download->build->install->package)
+  remove <nome-versão>          -> remove pacote instalado
+  list                          -> lista pacotes instalados
+  search <arquivo>              -> mostra a que pacote pertence um arquivo
+  deps <pacote.lfpkg>           -> mostra dependências
+  help                          -> mostra ajuda
+
+---
+
+5. FORMATO DE RECEITA .lfpkg
+-----------------------------
+Um arquivo `.lfpkg` é um shell-like key=value que descreve o pacote.
+
+Exemplo mínimo:
+    name=[zlib]
+    version=[1.3.1]
+    url=[https://zlib.net/zlib-1.3.1.tar.xz]
+    sha256sum=[abc123...]
+    build=[./configure --prefix=/usr && make -j$(nproc)]
+    install=[make DESTDIR=$DESTDIR install]
+
+Chaves suportadas:
+ - name         : nome do pacote
+ - version      : versão
+ - url          : link para download do tarball
+ - sha256sum    : checksum do tarball
+ - patchurl     : url de patch opcional
+ - patchsha256  : checksum do patch
+ - deps         : dependências (nomes)
+ - preconfig    : comandos antes do configure
+ - prepare      : comandos antes do build
+ - build        : como compilar
+ - install      : como instalar
+ - post_remove  : comandos após remoção
+
+---
+
+6. USANDO O TOOLCHAIN
+---------------------
+O toolchain é construído em duas fases:
+ - Fase 1: compilar Binutils e GCC (pass1) para rodar em chroot.
+ - Fase 2: compilar Glibc, depois recompilar GCC (pass2).
+ - Resultado: um conjunto de ferramentas mínimas em /mnt/lfs/tools.
+
+Exemplo de uso:
+    ./lfs.sh build-package binutils-pass1.lfpkg
+    ./lfs.sh build-package gcc-pass1.lfpkg
+    ./lfs.sh build-package glibc.lfpkg
+    ./lfs.sh build-package gcc-pass2.lfpkg
+
+Durante o processo:
+    export LFS=/mnt/lfs
+    export PATH=$LFS/tools/bin:$PATH
+
+O toolchain garante que a construção dos pacotes seguintes use apenas
+as libs e binários controlados.
+
+---
+
+7. EXEMPLOS DE RECEITAS
+-----------------------
+
+(1) GCC (pass2 simplificado)
+----------------------------
+name=[gcc]
+version=[13.2.0]
+url=[https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz]
+sha256sum=[<coloque_hash_aqui>]
+deps=[binutils glibc]
+prepare=[
+  ./contrib/download_prerequisites
+  mkdir -v build && cd build
+]
+build=[../configure --prefix=/usr --enable-languages=c,c++ && make -j$(nproc)]
+install=[make DESTDIR=$DESTDIR install]
+
+(2) Glibc
+---------
+name=[glibc]
+version=[2.40]
+url=[https://ftp.gnu.org/gnu/libc/glibc-2.40.tar.xz]
+sha256sum=[<coloque_hash_aqui>]
+deps=[linux-headers]
+prepare=[mkdir -v build && cd build]
+build=[../configure --prefix=/usr --disable-werror && make -j$(nproc)]
+install=[make DESTDIR=$DESTDIR install]
+
+(3) Firefox (simplificado)
+--------------------------
+name=[firefox]
+version=[128.0]
+url=[https://download.mozilla.org/?product=firefox-128.0-source&os=linux&lang=en-US]
+sha256sum=[<coloque_hash_aqui>]
+deps=[gtk3 libX11 alsa rust clang nodejs]
+prepare=[
+  ./mach bootstrap --application-choice=browser
+]
+build=[./mach build]
+install=[./mach install --destdir=$DESTDIR]
+
+OBS: Firefox tem muitas dependências extras, esta receita é apenas ilustrativa.
+
+---
+
+8. EXEMPLOS DE USO
+------------------
+a) Compilar e instalar GCC:
+    ./lfs.sh build-package recipes/gcc.lfpkg
+
+b) Gerar apenas pacote binário da Glibc:
+    ./lfs.sh package recipes/glibc.lfpkg
+
+c) Instalar a partir do pacote binário:
+    ./lfs.sh install-stage recipes/glibc.lfpkg
+
+d) Listar pacotes instalados:
+    ./lfs.sh list
+
+e) Descobrir a que pacote pertence um arquivo:
+    ./lfs.sh search /usr/bin/gcc
+
+---
+
+9. RESUMO
+---------
+- O `lfs.sh` centraliza a automação de builds no estilo LFS.
+- Pacotes são descritos em arquivos `.lfpkg`.
+- Suporta dependências, pacotes binários, remoção e rollback.
+- A árvore de diretórios separa sources, build e pacotes.
+- O toolchain é a base do processo, criado em duas fases.
+- Exemplos práticos: GCC, Glibc e Firefox.
