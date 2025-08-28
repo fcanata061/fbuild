@@ -1,0 +1,191 @@
+==============================
+ TUTORIAL COMPLETO - LFS.SH
+==============================
+
+Este documento descreve como instalar, configurar e usar o
+gerenciador de pacotes e build `lfs.sh`, inspirado em sistemas
+como pkgsrc, ports e makepkg, para gerenciar receitas, criar
+toolchains e instalar pacotes no Linux From Scratch.
+
+------------------------------------
+1. INSTALAÇÃO DO LFS.SH
+------------------------------------
+
+1. Baixe o arquivo `lfs.sh` (script principal).
+   Exemplo: copie e cole o conteúdo do script em um arquivo:
+   ~/lfs/lfs.sh
+
+2. Dê permissão de execução:
+   chmod +x lfs.sh
+
+3. Instale dependências básicas (em uma distro já funcional):
+   sudo apt install build-essential curl git fakeroot xz-utils \
+        unzip p7zip-full patch file
+
+   (em outras distros, instale os equivalentes)
+
+------------------------------------
+2. ESTRUTURA DE DIRETÓRIOS
+------------------------------------
+
+Ao usar o `lfs.sh`, a árvore de diretórios fica assim:
+
+~/lfs/
+ ├── build/            # diretórios de compilação temporários
+ ├── pkg/              # pacotes instalados (DESTDIR isolado)
+ ├── logs/             # logs e registro de pacotes
+ ├── sources/          # tarballs baixados
+ ├── repo/             # receitas
+ │    ├── base/        # pacotes básicos / toolchain
+ │    ├── x11/         # pacotes gráficos
+ │    ├── extras/      # libs adicionais
+ │    └── desktop/     # programas de desktop
+ └── lfs.sh            # script principal
+
+------------------------------------
+3. COMANDOS DISPONÍVEIS
+------------------------------------
+
+Uso: ./lfs.sh {build|install|clean|remove|list|info|new}
+
+- build <recipe>
+    Baixa, extrai, aplica patch, compila, mas NÃO instala.
+    Exemplo: ./lfs.sh build repo/base/gcc.recipe
+
+- install <recipe>
+    Instala em DESTDIR, faz strip, e se não for toolchain,
+    empacota em pkg/<nome>.tar.xz
+    Exemplo: ./lfs.sh install repo/base/gcc.recipe
+
+- clean
+    Remove diretórios de build temporários.
+
+- remove <pkg>
+    Remove um pacote já instalado (apaga do PKG_DIR e logs).
+
+- list
+    Lista pacotes instalados (segundo o banco de logs).
+
+- info <pkg>
+    Mostra informações sobre um pacote instalado.
+
+- new <categoria>
+    Cria uma receita modelo dentro de repo/<categoria>/model.recipe
+
+------------------------------------
+4. COMO CRIAR TOOLCHAIN
+------------------------------------
+
+O toolchain no LFS precisa ser construído sem instalar no
+sistema real. O `lfs.sh` suporta isso usando a variável
+TOOLCHAIN=yes.
+
+Exemplo para compilar o binutils:
+  TOOLCHAIN=yes ./lfs.sh build repo/base/binutils.recipe
+  TOOLCHAIN=yes ./lfs.sh install repo/base/binutils.recipe
+
+Nesse caso, ele instala no DESTDIR ($PKG_DIR) mas NÃO empacota.
+
+------------------------------------
+5. CONFIGURAR TOOLCHAIN
+------------------------------------
+
+1. Crie receitas para cada parte do toolchain (binutils, gcc,
+   glibc).
+2. Use DESTDIR apontando para o sysroot do LFS, por exemplo:
+   export LFS=/mnt/lfs
+   DESTDIR=$LFS/tools
+
+3. Em receitas do toolchain, inclua opções como:
+   --with-sysroot=$LFS
+   --target=$LFS_TGT
+   --disable-nls
+   --disable-werror
+
+Assim, cada pacote do toolchain será isolado no diretório
+$LFS/tools.
+
+------------------------------------
+6. EXEMPLOS DE RECEITAS
+------------------------------------
+
+------------------------------
+6.1. Receita GCC (Toolchain)
+repo/base/gcc.recipe
+------------------------------
+pkgdir=[gcc-13.2-toolchain]
+pkgname=[gcc]
+pkgver=[13.2.0]
+pkgurl=[https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz]
+md5sum=[xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]
+
+preconfig=[mkdir -p build]
+prepare=[cd build && ../configure --target=$LFS_TGT --prefix=$LFS/tools \
+    --with-glibc-version=2.41 --with-sysroot=$LFS --with-newlib \
+    --without-headers --enable-initfini-array --disable-nls \
+    --disable-shared --disable-multilib --disable-decimal-float \
+    --disable-threads --disable-libatomic --disable-libgomp \
+    --disable-libquadmath --disable-libssp --disable-libvtv \
+    --disable-libstdcxx --enable-languages=c,c++]
+build=[cd build && make -j\$(nproc)]
+install=[cd build && make install]
+
+------------------------------
+6.2. Receita GLib (Biblioteca)
+repo/extras/glib.recipe
+------------------------------
+pkgdir=[glib-2.78-1]
+pkgname=[glib]
+pkgver=[2.78.0]
+pkgurl=[https://download.gnome.org/sources/glib/2.78/glib-2.78.0.tar.xz]
+md5sum=[yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy]
+
+preconfig=[mkdir -p build]
+prepare=[cd build && meson .. --prefix=/usr --buildtype=release]
+build=[cd build && ninja -j\$(nproc)]
+install=[cd build && ninja install]
+
+------------------------------
+6.3. Receita Firefox (Aplicativo Desktop)
+repo/desktop/firefox.recipe
+------------------------------
+pkgdir=[firefox-117-1]
+pkgname=[firefox]
+pkgver=[117.0]
+pkgurl=[https://archive.mozilla.org/pub/firefox/releases/117.0/source/firefox-117.0.source.tar.xz]
+md5sum=[zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz]
+
+preconfig=[mkdir -p objdir]
+prepare=[cd objdir && ../configure --prefix=/usr --enable-default-toolkit=cairo-gtk3 \
+    --disable-debug --enable-optimize]
+build=[cd objdir && make -j\$(nproc)]
+install=[cd objdir && make DESTDIR=\$DESTDIR install]
+
+------------------------------------
+7. FLUXO DE USO PRÁTICO
+------------------------------------
+
+1. Criar diretórios base:
+   mkdir -p ~/lfs/{build,pkg,logs,sources,repo/{base,x11,extras,desktop}}
+
+2. Adicionar receitas dentro de repo/
+
+3. Compilar pacotes do toolchain:
+   TOOLCHAIN=yes ./lfs.sh build repo/base/binutils.recipe
+   TOOLCHAIN=yes ./lfs.sh install repo/base/binutils.recipe
+   TOOLCHAIN=yes ./lfs.sh build repo/base/gcc.recipe
+   TOOLCHAIN=yes ./lfs.sh install repo/base/gcc.recipe
+
+4. Compilar bibliotecas e aplicativos normais:
+   ./lfs.sh build repo/extras/glib.recipe
+   ./lfs.sh install repo/extras/glib.recipe
+
+   ./lfs.sh build repo/desktop/firefox.recipe
+   ./lfs.sh install repo/desktop/firefox.recipe
+
+5. Listar pacotes instalados:
+   ./lfs.sh list
+
+------------------------------------
+FIM DO TUTORIAL
+------------------------------------
