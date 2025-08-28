@@ -27,6 +27,14 @@ BACKUPDB="$PKGDB/backups"                    # backups de remoção/rollback
 HOOKSDB="$PKGDB/hooks"                       # ganchos por pacote (ex: post_remove)
 
 mkdir -p "$REPO"/{base,x11,extras,desktop} "$WORKDIR" "$DESTDIR" "$PKGDB" "$INSTDB" "$FILEDB" "$DEPSDB" "$BACKUPDB" "$HOOKSDB" "$BINREPO_DIR" "$LOGDIR"
+# Verificação mínima de dependências
+REQ_CMDS=(bash tar patch strip find xargs awk sed grep)
+for cmd in "${REQ_CMDS[@]}"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[ERRO] Dependência obrigatória não encontrada: $cmd" >&2
+    exit 1
+  fi
+done
 ############################################
 #                UI/CORES                  #
 ############################################
@@ -76,16 +84,18 @@ download(){
   spin_wrap downloader "$url" "$out"
 }
 
-md5_check(){
+sha256_check(){
   local file="$1" expected="$2"
-  [[ -z "${expected:-}" || "${expected,,}" == "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" ]] && { warn "MD5 não fornecido para $(basename "$file") — pulando verificação."; return; }
+  [[ -z "${expected:-}" || "${expected,,}" == "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" ]] && { 
+    warn "SHA256 não fornecido para $(basename "$file") — pulando verificação."; return; 
+  }
   local got
-  got=$(md5sum "$file" | awk '{print $1}')
+  got=$(sha256sum "$file" | awk '{print $1}')
   if [[ "$got" != "$expected" ]]; then
-    err "MD5 divergente: esperado=$expected obtido=$got para $(basename "$file")"
+    err "SHA256 divergente: esperado=$expected obtido=$got para $(basename "$file")"
     exit 1
   fi
-  ok "MD5 OK: $(basename "$file")"
+  ok "SHA256 OK: $(basename "$file")"
 }
 
 extract(){
@@ -128,13 +138,18 @@ pkg_log(){
 parse_recipe(){ # $1 = caminho da .lfpkg
   local rcp="$1"
   [[ -f "$rcp" ]] || { err "Receita não encontrada: $rcp"; exit 1; }
-  # conserta linhas chave=[valor] para bash
-  # shellcheck disable=SC1090
-  source <(sed -E 's/^([a-zA-Z0-9_]+)=\[(.*)\]$/\1="\2"/' "$rcp")
-  # sane defaults
+
+  # Apenas linhas no formato chave=[valor]
+  while IFS="=" read -r key val; do
+    [[ "$key" =~ ^[a-zA-Z0-9_]+$ ]] || continue
+    val="${val#[}"
+    val="${val%]}"
+    eval "$key=\"\$val\""
+  done < "$rcp"
+
   : "${deps:=}"
   : "${patchurl:=}"
-  : "${patchmd5:=}"
+  : "${patchsha256:=}"
   : "${pkgdir:=}"
   : "${preconfig:=}"
   : "${prepare:=}"
@@ -208,7 +223,7 @@ apply_patch_if_any(){ # usa patchurl/patchmd5
   if [[ -n "${patchurl:-}" ]]; then
     local pfile="$WORKDIR/${patchurl##*/}"
     download "$patchurl" "$pfile"
-    md5_check "$pfile" "${patchmd5:-}"
+    sha256_check "$srcfile" "${sha256sum:-}"
     info "Aplicando patch: $(basename "$pfile")"
     (cd "$srcdir" && patch -p1 < "$pfile")
   fi
@@ -224,7 +239,7 @@ do_build_only(){ # baixar+extrair+patch+compilar (NÃO instalar)
   if [[ ! -f "$srcfile" ]]; then
     download "$pkgurl" "$srcfile"
   fi
-  md5_check "$srcfile" "${md5sum:-}"
+  sha256_check "$srcfile" "${sha256sum:-}"
   # extrair
   rm -rf "$WORKDIR/src/$namever"
   extract "$srcfile" "$WORKDIR/src"
@@ -326,6 +341,16 @@ install_bin(){ # instala pacote do BINREPO para /
     pkgfile="$BINREPO_DIR/${namever}.${PKGEXT}"
   fi
   [[ -f "$pkgfile" ]] || { err "Pacote binário não encontrado: $pkgfile"; exit 1; }
+  # checar conflitos de arquivos
+  while read -r f; do
+    if [[ -e "/$f" ]]; then
+      for other in "$FILEDB"/*; do
+        grep -qx "/$f" "$other" 2>/dev/null && {
+          warn "Conflito: $f já pertence a $(basename "$other")"
+        }
+      done
+    fi
+  done < <(tar -tf "$pkgfile")
 
   info "Instalando binário no / (necessita permissões adequadas)"
   # backup para rollback
@@ -400,13 +425,12 @@ undo_remove(){ # restaura backup de uma remoção
   local name="$1" ver="$2" bakdir="${3:?backup_dir}"
   parse_recipe "$(recipe_from_name "$name" "$ver")"
   info "Restaurando a partir de $bakdir"
-  (cd "$bakdir" && find . -type f -o -type l | sed 's#^\./##') | while read -r rel; do
+  (cd "$bakdir" && find . -type d -o -type f -o -type l | sed 's#^\./##') | while read -r rel; do
     mkdir -p "/$(dirname "$rel")"
     cp -a "$bakdir/$rel" "/$rel"
   done
   ok "Restauração concluída."
 }
-
 ############################################
 #           BUSCA / INFO / LOGS            #
 ############################################
@@ -586,9 +610,13 @@ case "${cmd:-}" in
     rcp="$( [[ -f "${1:-}" ]] && echo "$1" || recipe_from_name "${1:?alvo}" "${2:-}" )"
     do_build_only "$rcp"
     ;;
-  install-stage|stage|package|build-package)
+  install-stage|stage|package)
     rcp="$( [[ -f "${1:-}" ]] && echo "$1" || recipe_from_name "${1:?alvo}" "${2:-}" )"
     do_install_from_build "$rcp"
+    ;;
+  build-package)
+    rcp="$( [[ -f "${1:-}" ]] && echo "$1" || recipe_from_name "${1:?alvo}" "${2:-}" )"
+    build_flow "$rcp"
     ;;
   install-bin)
     install_bin "${1:?nome}" "${2:-}"
